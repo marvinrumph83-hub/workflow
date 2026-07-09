@@ -12,6 +12,7 @@ import requests
 import base64
 import os
 import random
+import threading
 from pathlib import Path
 
 # Configuration
@@ -21,36 +22,76 @@ OUTPUT_DIR = f"{COMFYUI_PATH}/output"
 
 # ComfyUI process
 comfy_process = None
+comfy_ready = False
 
 
 def start_comfyui():
     """Start ComfyUI server in the background."""
-    global comfy_process
+    global comfy_process, comfy_ready
     
     if comfy_process is not None:
         return
     
+    print("=" * 60)
     print("Starting ComfyUI server...")
+    print("=" * 60)
+    
+    # Start ComfyUI process
     comfy_process = subprocess.Popen(
-        ["python", "main.py", "--listen", "127.0.0.1", "--port", str(COMFYUI_PORT)],
+        ["python", "main.py", "--listen", "127.0.0.1", "--port", str(COMFYUI_PORT), "--disable-auto-launch"],
         cwd=COMFYUI_PATH,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+        universal_newlines=True
     )
     
-    # Wait for ComfyUI to be ready
-    max_retries = 120  # 2 minutes for model loading
+    # Stream ComfyUI output in background thread
+    def stream_output():
+        for line in comfy_process.stdout:
+            print(f"[ComfyUI] {line.strip()}")
+    
+    output_thread = threading.Thread(target=stream_output, daemon=True)
+    output_thread.start()
+    
+    # Wait for ComfyUI to be ready (up to 10 minutes for model loading)
+    max_retries = 600  # 10 minutes
+    print(f"Waiting for ComfyUI to load models (max {max_retries}s)...")
+    
     for i in range(max_retries):
         try:
-            response = requests.get(f"http://127.0.0.1:{COMFYUI_PORT}/system_stats")
+            response = requests.get(f"http://127.0.0.1:{COMFYUI_PORT}/system_stats", timeout=5)
             if response.status_code == 200:
-                print(f"ComfyUI ready after {i+1} seconds")
+                print("=" * 60)
+                print(f"✅ ComfyUI ready after {i+1} seconds!")
+                print("=" * 60)
+                comfy_ready = True
                 return
-        except requests.exceptions.ConnectionError:
+        except requests.exceptions.RequestException:
             pass
+        
+        if i % 30 == 0 and i > 0:
+            print(f"Still waiting... ({i}s elapsed)")
+        
         time.sleep(1)
     
-    raise RuntimeError("ComfyUI failed to start within 120 seconds")
+    raise RuntimeError("ComfyUI failed to start within 10 minutes")
+
+
+def wait_for_comfyui():
+    """Wait for ComfyUI to be ready."""
+    global comfy_ready
+    
+    if comfy_ready:
+        return True
+    
+    # Wait up to 5 minutes if called before ready
+    for i in range(300):
+        if comfy_ready:
+            return True
+        time.sleep(1)
+    
+    return False
 
 
 def load_workflow():
@@ -105,7 +146,8 @@ def queue_prompt(workflow):
     """Queue a prompt in ComfyUI and return the prompt ID."""
     response = requests.post(
         f"http://127.0.0.1:{COMFYUI_PORT}/prompt",
-        json={"prompt": workflow}
+        json={"prompt": workflow},
+        timeout=30
     )
     
     if response.status_code != 200:
@@ -114,17 +156,23 @@ def queue_prompt(workflow):
     return response.json()["prompt_id"]
 
 
-def wait_for_completion(prompt_id, timeout=900):
-    """Wait for the prompt to complete (15 min timeout for video)."""
+def wait_for_completion(prompt_id, timeout=1800):
+    """Wait for the prompt to complete (30 min timeout for video)."""
     start_time = time.time()
     
     while time.time() - start_time < timeout:
-        response = requests.get(f"http://127.0.0.1:{COMFYUI_PORT}/history/{prompt_id}")
-        
-        if response.status_code == 200:
-            history = response.json()
-            if prompt_id in history:
-                return history[prompt_id]
+        try:
+            response = requests.get(
+                f"http://127.0.0.1:{COMFYUI_PORT}/history/{prompt_id}",
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                history = response.json()
+                if prompt_id in history:
+                    return history[prompt_id]
+        except requests.exceptions.RequestException as e:
+            print(f"Warning: Error checking history: {e}")
         
         time.sleep(3)
     
@@ -197,8 +245,9 @@ def handler(job):
     }
     """
     try:
-        # Start ComfyUI if not running
-        start_comfyui()
+        # Wait for ComfyUI to be ready
+        if not wait_for_comfyui():
+            return {"error": "ComfyUI failed to start", "status": "failed"}
         
         # Parse input
         job_input = job.get("input", {})
@@ -244,7 +293,7 @@ def handler(job):
         # Get output video
         video_path = get_output_video(history)
         if not video_path:
-            return {"error": "No video output found in ComfyUI history"}
+            return {"error": "No video output found in ComfyUI history", "status": "failed"}
         
         print(f"Output video: {video_path}")
         
@@ -271,6 +320,16 @@ def handler(job):
         traceback.print_exc()
         return {"error": str(e), "status": "failed"}
 
+
+# ========================================
+# STARTUP: Start ComfyUI before accepting jobs
+# ========================================
+print("=" * 60)
+print("RunPod Wan 2.1 Text-to-Video Handler Starting")
+print("=" * 60)
+
+# Start ComfyUI immediately at container boot
+start_comfyui()
 
 # Start the RunPod serverless handler
 runpod.serverless.start({"handler": handler})
