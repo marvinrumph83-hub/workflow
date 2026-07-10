@@ -34,6 +34,8 @@ WORKDIR ${COMFYUI_PATH}
 
 # Install ComfyUI dependencies
 RUN pip install --no-cache-dir -r requirements.txt
+# Reinstall torchvision with CUDA support (fixes nms operator error)
+RUN pip install --force-reinstall torchvision --index-url https://download.pytorch.org/whl/cu124
 
 # Install additional dependencies for video generation
 RUN pip install --no-cache-dir \
