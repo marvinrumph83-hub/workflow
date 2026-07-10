@@ -46,18 +46,17 @@ RUN pip install --no-cache-dir \
     accelerate \
     xformers
 
-# Create model directories
-RUN mkdir -p models/diffusion_models \
-    && mkdir -p models/text_encoders \
+# Create model directories (correct ComfyUI paths)
+RUN mkdir -p models/unet \
+    && mkdir -p models/clip \
     && mkdir -p models/vae \
     && mkdir -p output
 
-# Download Wan 2.1 models (1.3B Text-to-Video)
-# These will be cached in the Docker image
-RUN wget -q --show-progress -O models/diffusion_models/wan2.1_t2v_1.3B_fp16.safetensors \
+# Download Wan 2.1 models to CORRECT ComfyUI directories
+RUN wget -q --show-progress -O models/unet/wan2.1_t2v_1.3B_fp16.safetensors \
     "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/diffusion_models/wan2.1_t2v_1.3B_fp16.safetensors"
 
-RUN wget -q --show-progress -O models/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors \
+RUN wget -q --show-progress -O models/clip/umt5_xxl_fp8_e4m3fn_scaled.safetensors \
     "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors"
 
 RUN wget -q --show-progress -O models/vae/wan_2.1_vae.safetensors \
